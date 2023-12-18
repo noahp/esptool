@@ -1135,6 +1135,7 @@ ESP32H2ROM.BOOTLOADER_IMAGE = ESP32H2FirmwareImage
 class ELFFile(object):
     SEC_TYPE_PROGBITS = 0x01
     SEC_TYPE_STRTAB = 0x03
+    SEC_TYPE_NOTE = 0x07
     SEC_TYPE_NOBITS = 0x08  # e.g. .bss section
     SEC_TYPE_INITARRAY = 0x0E
     SEC_TYPE_FINIARRAY = 0x0F
@@ -1142,6 +1143,8 @@ class ELFFile(object):
     PROG_SEC_TYPES = (SEC_TYPE_PROGBITS, SEC_TYPE_INITARRAY, SEC_TYPE_FINIARRAY)
 
     LEN_SEC_HEADER = 0x28
+
+    SHF_ALLOC = 0x02
 
     SEG_TYPE_LOAD = 0x01
     LEN_SEG_HEADER = 0x20
@@ -1219,19 +1222,26 @@ class ELFFile(object):
         section_header_offsets = range(0, len(section_header), self.LEN_SEC_HEADER)
 
         def read_section_header(offs):
-            name_offs, sec_type, _flags, lma, sec_offs, size = struct.unpack_from(
+            name_offs, sec_type, flags, lma, sec_offs, size = struct.unpack_from(
                 "<LLLLLL", section_header[offs:]
             )
-            return (name_offs, sec_type, lma, size, sec_offs)
+            return (name_offs, sec_type, lma, size, sec_offs, flags)
+
+        def is_prog_section(s):
+            # section is ALLOC and (PROGBITS or NOTE).
+            # a section that is NOTE and ALLOC is for .note.gnu.build-id)
+            return (s[5] & ELFFile.SHF_ALLOC) and (
+                s[1] in ELFFile.PROG_SEC_TYPES or (s[1] == ELFFile.SEC_TYPE_NOTE)
+            )
 
         all_sections = [read_section_header(offs) for offs in section_header_offsets]
-        prog_sections = [s for s in all_sections if s[1] in ELFFile.PROG_SEC_TYPES]
+        prog_sections = [s for s in all_sections if is_prog_section(s)]
         nobits_secitons = [s for s in all_sections if s[1] == ELFFile.SEC_TYPE_NOBITS]
 
         # search for the string table section
         if not (shstrndx * self.LEN_SEC_HEADER) in section_header_offsets:
             raise FatalError("ELF file has no STRTAB section at shstrndx %d" % shstrndx)
-        _, sec_type, _, sec_size, sec_offs = read_section_header(
+        _, sec_type, _, sec_size, sec_offs, _flags = read_section_header(
             shstrndx * self.LEN_SEC_HEADER
         )
         if sec_type != ELFFile.SEC_TYPE_STRTAB:
@@ -1254,13 +1264,13 @@ class ELFFile(object):
 
         prog_sections = [
             ELFSection(lookup_string(n_offs), lma, read_data(offs, size))
-            for (n_offs, _type, lma, size, offs) in prog_sections
+            for (n_offs, _type, lma, size, offs, _flags) in prog_sections
             if lma != 0 and size > 0
         ]
         self.sections = prog_sections
         self.nobits_sections = [
             ELFSection(lookup_string(n_offs), lma, b"")
-            for (n_offs, _type, lma, size, offs) in nobits_secitons
+            for (n_offs, _type, lma, size, offs, _flags) in nobits_secitons
             if lma != 0 and size > 0
         ]
 
